@@ -4,20 +4,27 @@ import numpy as np
 
 
 class Game2048:
-    def __init__(self, prob2: float = 0.9):
+    def __init__(self, prob2: float = 0.9, board=None):
         self.prob2 = prob2
         self.prob4 = 1 - prob2
+
+        self.user_board = None
+        if board:
+            self.user_board = board.copy()
+
+        self.max_tile_value = 0
         self.new_game()
         self.actions_map = {
-            'U': (self.move_up, self.is_possible_up),
-            'D': (self.move_down, self.is_possible_down),
-            'L': (self.move_left, self.is_possible_left),
-            'R': (self.move_right, self.is_possible_right)
+            "U": (self.move_up, self.is_possible_up),
+            "D": (self.move_down, self.is_possible_down),
+            "L": (self.move_left, self.is_possible_left),
+            "R": (self.move_right, self.is_possible_right),
         }
+        self.actions = list(self.actions_map.keys())
 
-        self.top_row_asc_fill_bonus = 0.2
-        self.empty_count_bonus = 0.01
-        self.snake_formation_bonus = 0.5
+        self.empty_count_bonus = 0.02
+        self.max_log_tile_bonus = 0.5
+        self.smoothness_bonus = 0.05
 
     def is_game_over(self) -> bool:
         for i in range(4):
@@ -39,13 +46,13 @@ class Game2048:
                     res.append((i, j))
         return res
 
-    def place_new_block(self) -> None:
+    def place_new_block(self) -> int:
         if self.is_game_over():
             raise NoMovesLeft("No moves left")
-
         empty_slots = self.find_empty_slots()
         i, j = random.choice(empty_slots)
         self.board[i][j] = 2 if random.random() < self.prob2 else 4
+        return self.board[i][j]
 
     def is_possible_up(self) -> bool:
         for j in range(4):
@@ -138,7 +145,12 @@ class Game2048:
                     else:
                         if prev == self.board[i][j]:
                             self.board[idx - 1][j] += self.board[i][j]
-                            merged_tiles_log_sum += self.board[idx - 1][j].bit_length() - 1
+                            merged_tiles_log_sum += (
+                                self.board[idx - 1][j].bit_length() - 1
+                            )
+                            self.max_tile_value = max(
+                                self.board[idx - 1][j], self.max_tile_value
+                            )
                             self.board[i][j] = 0
                             prev = -1
                         else:
@@ -170,7 +182,12 @@ class Game2048:
                     else:
                         if prev == self.board[i][j]:
                             self.board[idx + 1][j] += self.board[i][j]
-                            merged_tiles_log_sum += self.board[idx + 1][j].bit_length() - 1
+                            merged_tiles_log_sum += (
+                                self.board[idx + 1][j].bit_length() - 1
+                            )
+                            self.max_tile_value = max(
+                                self.board[idx + 1][j], self.max_tile_value
+                            )
                             self.board[i][j] = 0
                             prev = -1
                         else:
@@ -202,7 +219,12 @@ class Game2048:
                     else:
                         if prev == self.board[i][j]:
                             self.board[i][idx - 1] += self.board[i][j]
-                            merged_tiles_log_sum += self.board[i][idx - 1].bit_length() - 1
+                            merged_tiles_log_sum += (
+                                self.board[i][idx - 1].bit_length() - 1
+                            )
+                            self.max_tile_value = max(
+                                self.board[i][idx - 1], self.max_tile_value
+                            )
                             self.board[i][j] = 0
                             prev = -1
                         else:
@@ -233,7 +255,12 @@ class Game2048:
                     else:
                         if prev == self.board[i][j]:
                             self.board[i][idx + 1] += self.board[i][j]
-                            merged_tiles_log_sum += self.board[i][idx + 1].bit_length() - 1
+                            merged_tiles_log_sum += (
+                                self.board[i][idx + 1].bit_length() - 1
+                            )
+                            self.max_tile_value = max(
+                                self.board[i][idx + 1], self.max_tile_value
+                            )
                             self.board[i][j] = 0
                             prev = -1
                         else:
@@ -246,74 +273,65 @@ class Game2048:
                 j -= 1
         return merged_tiles_log_sum
 
-    def play(self, action: str) -> float:
+    def play(self, action: str) -> tuple[float, bool]:
         move_fn, is_possible_fn = self.actions_map[action]
 
         if not is_possible_fn():
-            return -1
-        
+            return -4, False
+
         total_merged_log_sum = move_fn()
         state_reward = self.state_reward()
-        self.empty_count_bonus += .005
-        print(f"{self.empty_count_bonus = }")
-        print(f"state_reward = {state_reward}, {total_merged_log_sum = } \ttotal = {total_merged_log_sum + state_reward}")
-        return total_merged_log_sum + state_reward
+        return total_merged_log_sum + state_reward, True
 
     def state_reward(self) -> float:
+        smoothness_penalty = self._smoothness_penalty()
+        empty_count = np.log2(1 + self._count_empty())
+        return (
+            self.smoothness_bonus * smoothness_penalty
+            + self.empty_count_bonus * empty_count
+            # ! warning turned off
+            # + self.max_log_tile_bonus * np.log2(self.max_tile_value)
+        )
+
+    def _smoothness_penalty(self) -> int:
         res = 0
 
-        # more numer of empty boxes is better
+        for i in range(4):
+            for j in range(4):
+                if j < 3:
+                    a, b = self.board[i][j], self.board[i][j + 1]
+                    if a != 0 and b != 0:
+                        res += int(abs(np.log2(a) - np.log2(b)))
+                if i < 3:
+                    a, b = self.board[i][j], self.board[i + 1][j]
+                    if a != 0 and b != 0:
+                        res += int(abs(np.log2(a) - np.log2(b)))
+
+        return -res
+
+    def _count_empty(self) -> int:
         empty_count = 0
         for i in range(4):
             for j in range(4):
                 if self.board[i][j] == 0:
                     empty_count += 1
 
-        # rows are -
-        #   [ascending ]
-        #   [descending]
-        #   [ascending ]
-        #   [descending]
-
-        snake_formation_count = 0
-        is_top_row_ascending = False
-
-        is_going_right = True
-        for i in range(4):
-            for j in range(3):
-                if self.board[i][j] == 0 or self.board[i][j + 1] == 0:
-                    continue
-
-                if is_going_right and self.board[i][j] > self.board[i][j + 1]:
-                    snake_formation_count += 1
-                elif not is_going_right and self.board[i][j] < self.board[i][j + 1]:
-                    snake_formation_count += 1
-
-            is_going_right = not is_going_right
-            if i == 0 and snake_formation_count == 3:
-                is_top_row_ascending = True
-
-        # good if top row is in ascending order
-        top_row_asc_fill_bonus = self.top_row_asc_fill_bonus if (0 not in self.board[0]) and is_top_row_ascending else 0
-
-        res += snake_formation_count * (top_row_asc_fill_bonus + self.snake_formation_bonus)
-        res += empty_count * self.empty_count_bonus
-        print(f"{snake_formation_count = }, {empty_count = }, {top_row_asc_fill_bonus + self.snake_formation_bonus = }")
-        return res
+        return empty_count
 
     def play_debug(self) -> None:
         while not self.is_game_over():
             print(self.__str__())
             if self.is_possible_left():
-                self.play('L')
+                self.play("L")
             elif self.is_possible_up():
-                self.play('U')
+                self.play("U")
             elif self.is_possible_right():
-                self.play('R')
+                self.play("R")
             elif self.is_possible_down():
-                self.play('D')
+                self.play("D")
 
             print(self.__str__())
+            print("max: ", self.max_tile_value)
             self.place_new_block()
             input()
         print(self.__str__())
@@ -321,13 +339,20 @@ class Game2048:
     def _create_new_board(self) -> list[list[int]]:
         return [[0] * 4 for _ in range(4)]
 
+    def sample_actions(self) -> str:
+        return random.choice(self.actions)
+
     def get_state(self) -> list[int]:
         return [x for row in self.board for x in row]
 
     def new_game(self) -> None:
-        self.board = self._create_new_board()
-        self.place_new_block()
-        self.place_new_block()
+        if self.user_board:
+            self.board = self.user_board.copy()
+            self.max_tile_value = max(self.get_state())
+        else:
+            self.board = self._create_new_board()
+            self.max_tile_value = max(self.place_new_block(), self.max_tile_value)
+            self.max_tile_value = max(self.place_new_block(), self.max_tile_value)
 
     def __str__(self) -> str:
         res = "-" * 27 + "\n"
