@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from ddqn import DDQN
+from dqncnn import QNetworkCNN
 from game import Game2048
 from replaybuffer import ReplayBuffer
 
@@ -13,7 +14,7 @@ class Agent:
     def __init__(
         self,
         # ! warning learning rate
-        learning_rate=5e-5,
+        learning_rate=1e-4,
         discount_factor=0.999,
         epsilon=1.0,
         deque_size=25000,
@@ -23,8 +24,8 @@ class Agent:
     ) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.policy = DDQN().to(self.device)
-        self.target = DDQN().to(self.device)
+        self.policy = QNetworkCNN().to(self.device)
+        self.target = QNetworkCNN().to(self.device)
 
         self.target.load_state_dict(self.policy.state_dict())
         self.replay_buffer = ReplayBuffer(deque_size)
@@ -160,7 +161,7 @@ class Agent:
         else:
             with torch.no_grad():
                 q_vals = self.policy(
-                    torch.tensor(self.board.get_state(), dtype=torch.float32).to(
+                    torch.tensor([self.board.get_state_cnn()], dtype=torch.float32).to(
                         self.device
                     )
                 ).squeeze()
@@ -168,7 +169,7 @@ class Agent:
                 action_idx = q_vals.argmax().item()
                 action = self.board.actions[action_idx]
 
-        init_state = self.board.get_state()
+        init_state = self.board.get_state_cnn()
         reward, is_possible_action = self.board.play(action)
         is_policy_invalid = 0
 
@@ -178,7 +179,7 @@ class Agent:
             is_policy_invalid = 1
 
         is_terminated = self.board.is_game_over()
-        next_state = self.board.get_state()
+        next_state = self.board.get_state_cnn()
 
         self.replay_buffer.insert_transition(
             init_state, next_state, action, reward, is_terminated
@@ -195,9 +196,9 @@ class Agent:
             while not self.board.is_game_over():
                 action_idx: int = (
                     self.policy(
-                        torch.tensor(self.board.get_state(), dtype=torch.float32).to(
-                            self.device
-                        )
+                        torch.tensor(
+                            self.board.get_state_cnn(), dtype=torch.float32
+                        ).to(self.device)
                     )
                     .argmax()
                     .item()
@@ -227,7 +228,7 @@ class Agent:
         while not self.board.is_game_over():
             action_idx: int = (
                 self.policy(
-                    torch.tensor(self.board.get_state(), dtype=torch.float32).to(
+                    torch.tensor(self.board.get_state_cnn(), dtype=torch.float32).to(
                         self.device
                     )
                 )

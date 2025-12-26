@@ -2,7 +2,7 @@ import copy
 import random
 import numpy as np
 
-INVANLID_ACTION_PENALTY = -15
+INVANLID_ACTION_PENALTY = -5
 
 
 class Game2048:
@@ -25,9 +25,9 @@ class Game2048:
         self.actions = list(self.actions_map.keys())
 
         self.merge_tile_bonus = 1
-        self.empty_count_bonus = 0.005
-        self.smoothness_bonus = 0.001
-        self.cornered_bonus = 0.05
+        self.empty_count_bonus = 0.1
+        self.cornered_bonus = 0.5
+        self.smoothness_bonus = 0.015
         # self.empty_count_bonus = 0.0
         # self.smoothness_bonus = 0.0
         # self.cornered_bonus = 2
@@ -288,24 +288,23 @@ class Game2048:
         return total_merged_log_sum * self.merge_tile_bonus + state_reward, True
 
     def state_reward(self) -> float:
-        smoothness_penalty = self._smoothness_penalty()
-        empty_count = np.log2(1 + self._count_empty())
-
-        max_corners = max(
-            self.board[0][0], self.board[0][3], self.board[3][0], self.board[3][3], 1
-        )
-        # ! warning - (-1)
-        is_max_cornered = -1
-        if max_corners == self.max_tile_value and max_corners >= 8:
-            print("max cornered")
-            is_max_cornered = 1
-
-        max_corner_log = max_corners.bit_count() - 1
+        smoothness_penalty = self._smoothness_penalty() 
+        empty_count = self._count_empty()
+        
+        actual_max = self.max_tile_value
+        corner_values = [self.board[0][0], self.board[0][3], self.board[3][0], self.board[3][3]]
+        
+        is_max_in_corner = any(v == actual_max for v in corner_values)
+        max_tile_log = actual_max.bit_length() - 1 if actual_max > 0 else 0
+        
+        corner_reward = 0
+        if is_max_in_corner and actual_max >= 32:
+            corner_reward = self.cornered_bonus * max_tile_log
 
         return (
-            self.smoothness_bonus * smoothness_penalty
-            + self.empty_count_bonus * empty_count
-            + is_max_cornered * self.cornered_bonus * max_corner_log
+            (self.smoothness_bonus * smoothness_penalty) + 
+            (self.empty_count_bonus * empty_count) + 
+            corner_reward
         )
 
     def _smoothness_penalty(self) -> int:
@@ -336,7 +335,7 @@ class Game2048:
     def play_debug(self) -> None:
         while not self.is_game_over():
             print(self.__str__())
-            print(self.get_state())
+            print(self.get_state_ann())
             action = input()
             move, is_possible = self.actions_map[action]
             move()
@@ -351,10 +350,18 @@ class Game2048:
         action = random.choice(self.actions)
         return action
 
-    def get_state(self) -> list[float]:
+    def get_state_ann(self) -> list[float]:
         return [
             (max(x, 1).bit_length() - 1) / 11 for row in self.board for x in row
         ] + self.get_valid_actions_mask()
+
+    def get_state_cnn(self):
+        res = [[0.0] * 4 for _ in range(4)]
+        for i in range(4):
+            for j in range(4):
+                res[i][j] = (max(self.board[i][j], 1).bit_length() - 1) / 11
+
+        return [res]
 
     def get_valid_actions_mask(self) -> list[int]:
         return [int(is_possible()) for _, is_possible in self.actions_map.values()]
@@ -362,7 +369,6 @@ class Game2048:
     def new_game(self) -> None:
         if self.user_board:
             self.board: list[list[int]] = copy.deepcopy(self.user_board)
-            self.max_tile_value = max(self.get_state())
         else:
             self.board = self._create_new_board()
             self.max_tile_value = self.place_new_block()
@@ -383,5 +389,4 @@ class Game2048:
 
 if __name__ == "__main__":
     board = [[256, 256, 64, 64], [2, 2, 4, 8], [4, 4, 2, 4], [0, 0, 0, 2]]
-    game = Game2048(0.9)
-    print(game.play_debug())
+    game = Game2048(0.9, board)

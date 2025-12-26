@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 
 class QNetworkCNN(nn.Module):
-    def __init__(self, num_actions):
+    def __init__(self, num_actions=4):
         super().__init__()
 
         self.conv = nn.Sequential(
