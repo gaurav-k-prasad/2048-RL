@@ -1,6 +1,8 @@
-from Exceptions import NoMovesLeft
+import copy
 import random
 import numpy as np
+
+INVANLID_ACTION_PENALTY = -15
 
 
 class Game2048:
@@ -22,9 +24,13 @@ class Game2048:
         }
         self.actions = list(self.actions_map.keys())
 
-        self.empty_count_bonus = 0.02
-        self.max_log_tile_bonus = 0.5
-        self.smoothness_bonus = 0.05
+        self.merge_tile_bonus = 1
+        self.empty_count_bonus = 0.005
+        self.smoothness_bonus = 0.001
+        self.cornered_bonus = 0.05
+        # self.empty_count_bonus = 0.0
+        # self.smoothness_bonus = 0.0
+        # self.cornered_bonus = 2
 
     def is_game_over(self) -> bool:
         for i in range(4):
@@ -47,8 +53,6 @@ class Game2048:
         return res
 
     def place_new_block(self) -> int:
-        if self.is_game_over():
-            raise NoMovesLeft("No moves left")
         empty_slots = self.find_empty_slots()
         i, j = random.choice(empty_slots)
         self.board[i][j] = 2 if random.random() < self.prob2 else 4
@@ -277,20 +281,31 @@ class Game2048:
         move_fn, is_possible_fn = self.actions_map[action]
 
         if not is_possible_fn():
-            return -4, False
+            return INVANLID_ACTION_PENALTY, False
 
         total_merged_log_sum = move_fn()
         state_reward = self.state_reward()
-        return total_merged_log_sum + state_reward, True
+        return total_merged_log_sum * self.merge_tile_bonus + state_reward, True
 
     def state_reward(self) -> float:
         smoothness_penalty = self._smoothness_penalty()
         empty_count = np.log2(1 + self._count_empty())
+
+        max_corners = max(
+            self.board[0][0], self.board[0][3], self.board[3][0], self.board[3][3], 1
+        )
+        # ! warning - (-1)
+        is_max_cornered = -1
+        if max_corners == self.max_tile_value and max_corners >= 8:
+            print("max cornered")
+            is_max_cornered = 1
+
+        max_corner_log = max_corners.bit_count() - 1
+
         return (
             self.smoothness_bonus * smoothness_penalty
             + self.empty_count_bonus * empty_count
-            # ! warning turned off
-            # + self.max_log_tile_bonus * np.log2(self.max_tile_value)
+            + is_max_cornered * self.cornered_bonus * max_corner_log
         )
 
     def _smoothness_penalty(self) -> int:
@@ -321,37 +336,36 @@ class Game2048:
     def play_debug(self) -> None:
         while not self.is_game_over():
             print(self.__str__())
-            if self.is_possible_left():
-                self.play("L")
-            elif self.is_possible_up():
-                self.play("U")
-            elif self.is_possible_right():
-                self.play("R")
-            elif self.is_possible_down():
-                self.play("D")
-
-            print(self.__str__())
-            print("max: ", self.max_tile_value)
+            print(self.get_state())
+            action = input()
+            move, is_possible = self.actions_map[action]
+            move()
             self.place_new_block()
-            input()
+
         print(self.__str__())
 
     def _create_new_board(self) -> list[list[int]]:
         return [[0] * 4 for _ in range(4)]
 
     def sample_actions(self) -> str:
-        return random.choice(self.actions)
+        action = random.choice(self.actions)
+        return action
 
-    def get_state(self) -> list[int]:
-        return [x for row in self.board for x in row]
+    def get_state(self) -> list[float]:
+        return [
+            (max(x, 1).bit_length() - 1) / 11 for row in self.board for x in row
+        ] + self.get_valid_actions_mask()
+
+    def get_valid_actions_mask(self) -> list[int]:
+        return [int(is_possible()) for _, is_possible in self.actions_map.values()]
 
     def new_game(self) -> None:
         if self.user_board:
-            self.board = self.user_board.copy()
+            self.board: list[list[int]] = copy.deepcopy(self.user_board)
             self.max_tile_value = max(self.get_state())
         else:
             self.board = self._create_new_board()
-            self.max_tile_value = max(self.place_new_block(), self.max_tile_value)
+            self.max_tile_value = self.place_new_block()
             self.max_tile_value = max(self.place_new_block(), self.max_tile_value)
 
     def __str__(self) -> str:
@@ -365,3 +379,9 @@ class Game2048:
             res += "-" * 27 + "\n"
 
         return res
+
+
+if __name__ == "__main__":
+    board = [[256, 256, 64, 64], [2, 2, 4, 8], [4, 4, 2, 4], [0, 0, 0, 2]]
+    game = Game2048(0.9)
+    print(game.play_debug())
