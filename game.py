@@ -288,23 +288,28 @@ class Game2048:
         return total_merged_log_sum * self.merge_tile_bonus + state_reward, True
 
     def state_reward(self) -> float:
-        smoothness_penalty = self._smoothness_penalty() 
+        smoothness_penalty = self._smoothness_penalty()
         empty_count = self._count_empty()
-        
+
         actual_max = self.max_tile_value
-        corner_values = [self.board[0][0], self.board[0][3], self.board[3][0], self.board[3][3]]
-        
+        corner_values = [
+            self.board[0][0],
+            self.board[0][3],
+            self.board[3][0],
+            self.board[3][3],
+        ]
+
         is_max_in_corner = any(v == actual_max for v in corner_values)
         max_tile_log = actual_max.bit_length() - 1 if actual_max > 0 else 0
-        
+
         corner_reward = 0
         if is_max_in_corner and actual_max >= 32:
             corner_reward = self.cornered_bonus * max_tile_log
 
         return (
-            (self.smoothness_bonus * smoothness_penalty) + 
-            (self.empty_count_bonus * empty_count) + 
-            corner_reward
+            (self.smoothness_bonus * smoothness_penalty)
+            + (self.empty_count_bonus * empty_count)
+            + corner_reward
         )
 
     def _smoothness_penalty(self) -> int:

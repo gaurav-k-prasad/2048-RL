@@ -14,7 +14,7 @@ class Agent:
     def __init__(
         self,
         # ! warning learning rate
-        learning_rate=1e-4,
+        learning_rate=1e-3,
         discount_factor=0.999,
         epsilon=1.0,
         deque_size=25000,
@@ -56,12 +56,9 @@ class Agent:
             iterations = 0
             valid_actions_count = 0
             policy_invalid_count = 0
-            game_info = []
-            least_epsilon = False
 
             while not self.board.is_game_over():
                 curr_reward, is_valid_action, is_policy_invalid = self.action()
-                game_info.append((curr_reward))
                 total_reward += curr_reward
                 policy_invalid_count += is_policy_invalid
 
@@ -72,9 +69,6 @@ class Agent:
                     batch = self.replay_buffer.random_sample(self.batch_size)
                     self.optimize(batch)
                     self.epsilon = max(self.epsilon * self.epsilon_decay_rate, 0.05)
-                    if self.epsilon <= 0.05:
-                        least_epsilon = True
-                        break
 
                 if step_count % self.network_sync_rate == 0:
                     self.target.load_state_dict(self.policy.state_dict())
@@ -90,10 +84,18 @@ class Agent:
             max_tiles.append(self.board.max_tile_value)
             print(self.board)
 
-            if least_epsilon:
-                break
+            if i % 1000 == 0:
+                checkpoint = {
+                    "episode": i,
+                    "model_state_dict": self.policy.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "epsilon": self.epsilon,
+                }
+
+                torch.save(checkpoint, "checkpoint.pth")
 
         self.evaulate(100)
+
         # self.play_debug()
         # plt.subplot(121)
         # sns.lineplot(rewards)
@@ -102,53 +104,23 @@ class Agent:
         # plt.show()
 
     def optimize(self, batch) -> None:
-        init_states, next_states, actions, rewards, is_terminated_vals = list(
-            zip(*batch)
-        )
-        init_states = torch.tensor(init_states, dtype=torch.float32).to(self.device)
-        actions = torch.tensor(
-            [self.board.actions.index(action) for action in actions]
-        ).to(self.device)
-        rewards = torch.tensor(rewards).to(self.device)
-        is_terminated_vals = torch.tensor(is_terminated_vals).to(self.device)
+        states, next_states, actions, rewards, dones = zip(*batch)
 
-        not_terminated_next_states = []
-        for i in range(len(batch)):
-            if not is_terminated_vals[i]:
-                not_terminated_next_states.append(next_states[i])
-
-        not_terminated_next_states = torch.tensor(not_terminated_next_states).to(
-            self.device
+        states = torch.tensor(states, dtype=torch.float32, device=self.device)
+        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+        dones = torch.tensor(dones, dtype=torch.bool, device=self.device)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(
+            1
         )
+
+        pred_q_values = self.policy(states).gather(1, actions).squeeze(1)
         with torch.no_grad():
-            next_q_policy = self.policy(not_terminated_next_states)
-            not_terminated_q_actions = next_q_policy.argmax(dim=1)
+            next_actions = self.policy(next_states).argmax(dim=1).unsqueeze(1)
+            next_q_values = self.target(next_states).gather(1, next_actions).squeeze(1)
+            targets = rewards + (self.discount_factor * next_q_values * (~dones))
 
-            next_q_target = self.target(not_terminated_next_states)
-            not_terminated_q_vals = next_q_target.gather(
-                1, not_terminated_q_actions.unsqueeze(1)
-            ).squeeze(1)
-
-        targets = []
-
-        not_terminated_idx = 0
-        for i in range(len(batch)):
-            if is_terminated_vals[i]:
-                targets.append(rewards[i])
-            else:
-                targets.append(
-                    rewards[i]
-                    + self.discount_factor * not_terminated_q_vals[not_terminated_idx]
-                )
-                not_terminated_idx += 1
-
-        targets = torch.tensor(targets).to(self.device)
-        curr_q_vals = self.policy(init_states)
-        target_q_vals = curr_q_vals.clone().detach()
-        for i, action in enumerate(actions):
-            target_q_vals[i, action] = targets[i]
-
-        loss = self.loss_fn(curr_q_vals, target_q_vals)
+        loss = self.loss_fn(pred_q_values, targets)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -182,7 +154,11 @@ class Agent:
         next_state = self.board.get_state_cnn()
 
         self.replay_buffer.insert_transition(
-            init_state, next_state, action, reward, is_terminated
+            init_state,
+            next_state,
+            self.board.actions.index(action),
+            reward,
+            is_terminated,
         )
         return reward, int(is_possible_action), is_policy_invalid
 

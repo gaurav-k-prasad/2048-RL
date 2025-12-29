@@ -14,7 +14,9 @@ class QNetworkCNN(nn.Module):
         )
 
         self.fc = nn.Sequential(
-            nn.Linear(128 * 2 * 2, 256), nn.ReLU(), nn.Linear(256, num_actions)
+            nn.Linear(128 * 2 * 2, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_actions),
         )
 
     def forward(self, x):
