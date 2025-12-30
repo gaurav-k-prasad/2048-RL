@@ -2,35 +2,32 @@ import copy
 import random
 import numpy as np
 
-INVANLID_ACTION_PENALTY = -5
+INVALID_ACTION_PENALTY = -8
 
 
 class Game2048:
-    def __init__(self, prob2: float = 0.9, board=None):
+    def __init__(self, prob2: float = 0.9, learning_mode="ann", board=None):
         self.prob2 = prob2
         self.prob4 = 1 - prob2
-
+        self.learning_mode = learning_mode
         self.user_board = None
         if board:
             self.user_board = board.copy()
 
         self.max_tile_value = 0
         self.new_game()
-        self.actions_map = {
-            "U": (self.move_up, self.is_possible_up),
-            "D": (self.move_down, self.is_possible_down),
-            "L": (self.move_left, self.is_possible_left),
-            "R": (self.move_right, self.is_possible_right),
-        }
-        self.actions = list(self.actions_map.keys())
+        self.actions_map = [
+            (self.move_up, self.is_possible_up),
+            (self.move_down, self.is_possible_down),
+            (self.move_left, self.is_possible_left),
+            (self.move_right, self.is_possible_right),
+        ]
+        self.actions = ['U', 'D', 'L', 'R']
 
-        self.merge_tile_bonus = 1
+        self.merge_tile_bonus = 1.2
         self.empty_count_bonus = 0.1
-        self.cornered_bonus = 0.5
-        self.smoothness_bonus = 0.015
-        # self.empty_count_bonus = 0.0
-        # self.smoothness_bonus = 0.0
-        # self.cornered_bonus = 2
+        self.cornered_bonus = 0.8
+        self.smoothness_bonus = 0.07
 
     def is_game_over(self) -> bool:
         for i in range(4):
@@ -277,11 +274,14 @@ class Game2048:
                 j -= 1
         return merged_tiles_log_sum
 
-    def play(self, action: str) -> tuple[float, bool]:
+    def action_to_string(self, action: int) -> str:
+        return self.actions[action]        
+
+    def play(self, action: int) -> tuple[float, bool]:
         move_fn, is_possible_fn = self.actions_map[action]
 
         if not is_possible_fn():
-            return INVANLID_ACTION_PENALTY, False
+            return INVALID_ACTION_PENALTY, False
 
         total_merged_log_sum = move_fn()
         state_reward = self.state_reward()
@@ -292,14 +292,16 @@ class Game2048:
         empty_count = self._count_empty()
 
         actual_max = self.max_tile_value
-        corner_values = [
-            self.board[0][0],
-            self.board[0][3],
-            self.board[3][0],
-            self.board[3][3],
-        ]
 
-        is_max_in_corner = any(v == actual_max for v in corner_values)
+        # corner_values = [
+        #     self.board[0][0],
+        #     self.board[0][3],
+        #     self.board[3][0],
+        #     self.board[3][3],
+        # ]
+        # is_max_in_corner = any(v == actual_max for v in corner_values)
+        # ! warning
+        is_max_in_corner = actual_max == self.board[0][0]
         max_tile_log = actual_max.bit_length() - 1 if actual_max > 0 else 0
 
         corner_reward = 0
@@ -320,11 +322,11 @@ class Game2048:
                 if j < 3:
                     a, b = self.board[i][j], self.board[i][j + 1]
                     if a != 0 and b != 0:
-                        res += int(abs(np.log2(a) - np.log2(b)))
+                        res += int(abs(a.bit_length() - b.bit_length()))
                 if i < 3:
                     a, b = self.board[i][j], self.board[i + 1][j]
                     if a != 0 and b != 0:
-                        res += int(abs(np.log2(a) - np.log2(b)))
+                        res += int(abs(a.bit_length() - b.bit_length()))
 
         return -res
 
@@ -341,7 +343,7 @@ class Game2048:
         while not self.is_game_over():
             print(self.__str__())
             print(self.get_state_ann())
-            action = input()
+            action = int(input())
             move, is_possible = self.actions_map[action]
             move()
             self.place_new_block()
@@ -351,25 +353,32 @@ class Game2048:
     def _create_new_board(self) -> list[list[int]]:
         return [[0] * 4 for _ in range(4)]
 
-    def sample_actions(self) -> str:
-        action = random.choice(self.actions)
+    def sample_actions(self) -> int:
+        valid_actions = [i for i, ele in enumerate(self.get_valid_actions_mask()) if ele]
+        action = random.choice(valid_actions)
         return action
 
     def get_state_ann(self) -> list[float]:
-        return [
-            (max(x, 1).bit_length() - 1) / 11 for row in self.board for x in row
-        ] + self.get_valid_actions_mask()
-
-    def get_state_cnn(self):
+        return [(max(x, 1).bit_length() - 1) / 11 for row in self.board for x in row]
+        
+    def get_state_cnn(self) -> list[list[float]]:
         res = [[0.0] * 4 for _ in range(4)]
         for i in range(4):
             for j in range(4):
                 res[i][j] = (max(self.board[i][j], 1).bit_length() - 1) / 11
 
-        return [res]
+        return res
+    
+    def get_state(self):
+        if (self.learning_mode == "ann"):
+            return self.get_state_ann() + self.get_valid_actions_mask()
+        elif (self.learning_mode == "cnn"):
+            return [self.get_state_cnn() + [self.get_valid_actions_mask()]]
+        else:
+            raise ValueError("No valid learning mode selected")
 
     def get_valid_actions_mask(self) -> list[int]:
-        return [int(is_possible()) for _, is_possible in self.actions_map.values()]
+        return [int(is_possible()) for _, is_possible in self.actions_map]
 
     def new_game(self) -> None:
         if self.user_board:
@@ -394,4 +403,4 @@ class Game2048:
 
 if __name__ == "__main__":
     board = [[256, 256, 64, 64], [2, 2, 4, 8], [4, 4, 2, 4], [0, 0, 0, 2]]
-    game = Game2048(0.9, board)
+    game = Game2048(0.9, board=board, learning_mode="ann")

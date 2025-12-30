@@ -3,6 +3,7 @@ import torch.nn as nn
 import random
 import matplotlib.pyplot as plt
 import seaborn as sns
+import gc
 
 from ddqn import DDQN
 from dqncnn import QNetworkCNN
@@ -13,47 +14,69 @@ from replaybuffer import ReplayBuffer
 class Agent:
     def __init__(
         self,
-        # ! warning learning rate
+        name_output,
         learning_rate=1e-3,
         discount_factor=0.999,
         epsilon=1.0,
-        deque_size=25000,
+        deque_size=500000,
         batch_size=128,
-        network_sync_rate=6000,
-        epsilon_decay_rate=1 - 1e-4,
-    ) -> None:
+        network_sync_rate=5000,
+        epsilon_decay_rate=0.99994,
+        checkpoint_path=None,
+        learning_mode="ann"
+    ) -> None:        
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.policy = QNetworkCNN().to(self.device)
-        self.target = QNetworkCNN().to(self.device)
+        self.policy = DDQN().to(self.device) if learning_mode == "ann" else QNetworkCNN().to(self.device)
+        self.target = DDQN().to(self.device) if learning_mode == "ann" else QNetworkCNN().to(self.device)
 
-        self.target.load_state_dict(self.policy.state_dict())
         self.replay_buffer = ReplayBuffer(deque_size)
-        self.board = Game2048()
+        self.board = Game2048(0.9, learning_mode)
         self.deque_size = deque_size
         self.batch_size = batch_size
+        self.name_output = name_output
 
+        self.learning_mode = learning_mode
         self.learning_rate = learning_rate
         self.epsilon = epsilon
         self.discount_factor = discount_factor
         self.network_sync_rate = network_sync_rate
         self.epsilon_decay_rate = epsilon_decay_rate
+        self.start_episode = 0
 
         self.optimizer = torch.optim.Adam(
             params=self.policy.parameters(), lr=self.learning_rate
         )
+        
+        if checkpoint_path:
+            checkpoint = torch.load(checkpoint_path)
+            self.epsilon = checkpoint.get("epsilon", self.epsilon)
+            self.policy.load_state_dict(checkpoint["model_state_dict"])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.start_episode = checkpoint.get("episode", 0) + 1 # Resume from next episode
+            del checkpoint
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        self.target.load_state_dict(self.policy.state_dict())
         self.rewards_per_episode: list[float] = []
         self.loss_fn = nn.MSELoss()
 
     def train(self, episodes) -> None:
         step_count: int = 0
-        rewards: list[float] = []
-        max_tiles: list[float] = []
+        avg_rewards: list[float] = []
+        avg_max_tiles: list[float] = []
+        avg_iterations: list[float] = []
 
-        for i in range(episodes):
+        curr_rewards: list[float] = []
+        curr_max_tiles: list[float] = []
+        curr_iterations: list[int] = []
+
+        for i in range(self.start_episode, episodes + 1):
             self.board.new_game()
             total_reward = 0
             iterations = 0
+
             valid_actions_count = 0
             policy_invalid_count = 0
 
@@ -65,26 +88,46 @@ class Agent:
                 step_count += 1
                 valid_actions_count += is_valid_action
 
-                if len(self.replay_buffer) >= self.batch_size:
+                if len(self.replay_buffer) >= 2000 and step_count % 3 == 0:
                     batch = self.replay_buffer.random_sample(self.batch_size)
                     self.optimize(batch)
-                    self.epsilon = max(self.epsilon * self.epsilon_decay_rate, 0.05)
 
                 if step_count % self.network_sync_rate == 0:
                     self.target.load_state_dict(self.policy.state_dict())
                 iterations += 1
 
-            print(
-                f"{i = }, {self.epsilon = }, max tile: {self.board.max_tile_value}, "
-                f"total reward: {total_reward}, iterations: {iterations}, "
-                f"invalid action count {iterations - valid_actions_count}, ",
-                f"policy invalid count: {policy_invalid_count}",
-            )
-            rewards.append(total_reward)
-            max_tiles.append(self.board.max_tile_value)
-            print(self.board)
+            # print(
+            #     f"{i = }, {self.epsilon = }, max tile: {self.board.max_tile_value}, "
+            #     f"total reward: {total_reward}, iterations: {iterations}, "
+            #     f"invalid action count {iterations - valid_actions_count}, ",
+            #     f"policy invalid count: {policy_invalid_count}",
+            # )
+            self.epsilon = max(self.epsilon * self.epsilon_decay_rate, 0.05)
+            curr_rewards.append(total_reward)
+            curr_iterations.append(iterations)
+            curr_max_tiles.append(self.board.max_tile_value)
+            print(f"iteration: {i}")
 
-            if i % 1000 == 0:
+            if i > 0 and i % 500 == 0:
+                avg_reward = sum(curr_rewards) / len(curr_rewards)
+                avg_iteration = sum(curr_iterations) / len(curr_iterations)
+                avg_max_tile = sum(curr_max_tiles) / len(curr_max_tiles)
+
+                print(
+                    f"{i = }, {self.epsilon = }, max tile: {avg_max_tile}, "
+                    f"average reward: {avg_reward}, avg iterations: {avg_iteration}, "
+                    f"average max tile: {avg_max_tile}"
+                )
+                curr_rewards = []
+                curr_iterations = []
+                curr_max_tiles = []
+                gc.collect()
+                avg_rewards.append(avg_reward)
+                avg_iterations.append(avg_iteration)
+                avg_max_tiles.append(avg_max_tile)
+
+            if i > 0 and i % 5000 == 0:
+                print(self.board)
                 checkpoint = {
                     "episode": i,
                     "model_state_dict": self.policy.state_dict(),
@@ -92,9 +135,14 @@ class Agent:
                     "epsilon": self.epsilon,
                 }
 
-                torch.save(checkpoint, "checkpoint.pth")
+                torch.save(checkpoint, f"checkpoint_{self.learning_mode}_{self.name_output}.pth")
+                self.save_line_plot(f"reward_{self.name_output}", avg_rewards, i)
+                self.save_line_plot(f"iterations_{self.name_output}", avg_iterations, i)
+                self.save_line_plot(f"max tiles_{self.name_output}", avg_max_tiles, i)
 
-        self.evaulate(100)
+        print(avg_rewards)
+        print(avg_max_tiles)
+        print(avg_iterations)
 
         # self.play_debug()
         # plt.subplot(121)
@@ -133,15 +181,14 @@ class Agent:
         else:
             with torch.no_grad():
                 q_vals = self.policy(
-                    torch.tensor([self.board.get_state_cnn()], dtype=torch.float32).to(
+                    torch.tensor([self.board.get_state()], dtype=torch.float32).to(
                         self.device
                     )
                 ).squeeze()
 
-                action_idx = q_vals.argmax().item()
-                action = self.board.actions[action_idx]
+                action = q_vals.argmax().item()
 
-        init_state = self.board.get_state_cnn()
+        init_state = self.board.get_state()
         reward, is_possible_action = self.board.play(action)
         is_policy_invalid = 0
 
@@ -151,12 +198,12 @@ class Agent:
             is_policy_invalid = 1
 
         is_terminated = self.board.is_game_over()
-        next_state = self.board.get_state_cnn()
+        next_state = self.board.get_state()
 
         self.replay_buffer.insert_transition(
             init_state,
             next_state,
-            self.board.actions.index(action),
+            action,
             reward,
             is_terminated,
         )
@@ -170,17 +217,17 @@ class Agent:
             total_reward = 0
             self.board.new_game()
             while not self.board.is_game_over():
-                action_idx: int = (
+                action: int = (
                     self.policy(
                         torch.tensor(
-                            self.board.get_state_cnn(), dtype=torch.float32
+                            self.board.get_state(), dtype=torch.float32
                         ).to(self.device)
                     )
                     .argmax()
                     .item()
                 )
-                action = self.board.actions[action_idx]
                 reward, possible = self.board.play(action)
+                print(self.board)
                 total_reward += reward
 
                 if possible:
@@ -198,22 +245,33 @@ class Agent:
         sns.lineplot(result)
         plt.show()
 
+    def save_line_plot(self, name, values, episode_num):
+        plt.figure(figsize=(10, 5))
+        plt.title(f"Training Progress - Episode {episode_num}")
+        
+        plt.plot(values, alpha=0.3, color='blue', label=f'Raw {name}')
+        
+        plt.xlabel("Episode")
+        plt.ylabel(f"Total {name}")
+        plt.legend()
+        
+        # Save the file with the episode count in the name
+        plt.savefig(f"{self.learning_mode}_images/{name}_plot_{episode_num}.png")
+        plt.close()
+
     def play_debug(self) -> None:
         self.board.new_game()
 
         while not self.board.is_game_over():
-            action_idx: int = (
-                self.policy(
-                    torch.tensor(self.board.get_state_cnn(), dtype=torch.float32).to(
+            q_vals = self.policy(
+                    torch.tensor([self.board.get_state()], dtype=torch.float32).to(
                         self.device
                     )
-                )
-                .argmax()
-                .item()
-            )
-            action = self.board.actions[action_idx]
+                ).squeeze()
+
+            action = q_vals.argmax().item()
             _, possible = self.board.play(action)
-            print(action)
+            print(self.board.action_to_string(action))
             print(self.board)
             if possible:
                 self.board.place_new_block()

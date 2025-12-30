@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -20,7 +21,14 @@ class QNetworkCNN(nn.Module):
         )
 
     def forward(self, x):
-        # x: (B, 1, 4, 4)
-        x = self.conv(x)
-        x = x.view(x.size(0), -1)
-        return self.fc(x)
+        board = x[:, :, :4, :]
+        mask = x[:, :, -1, :].squeeze(1)
+        
+        mask.to(x.device)
+        board.to(x.device)
+
+        features = self.conv(board)
+        features = features.view(features.size(0), -1)
+        q_values = self.fc(features)
+        masked_q_values = q_values + (mask - 1) * 1e9
+        return masked_q_values
