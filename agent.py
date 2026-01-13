@@ -23,12 +23,20 @@ class Agent:
         network_sync_rate=5000,
         epsilon_decay_rate=0.99994,
         checkpoint_path=None,
-        learning_mode="ann"
-    ) -> None:        
+        learning_mode="ann",
+    ) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.policy = DDQN().to(self.device) if learning_mode == "ann" else QNetworkCNN().to(self.device)
-        self.target = DDQN().to(self.device) if learning_mode == "ann" else QNetworkCNN().to(self.device)
+        self.policy = (
+            DDQN().to(self.device)
+            if learning_mode == "ann"
+            else QNetworkCNN().to(self.device)
+        )
+        self.target = (
+            DDQN().to(self.device)
+            if learning_mode == "ann"
+            else QNetworkCNN().to(self.device)
+        )
 
         self.replay_buffer = ReplayBuffer(deque_size)
         self.board = Game2048(0.9, learning_mode)
@@ -47,13 +55,15 @@ class Agent:
         self.optimizer = torch.optim.Adam(
             params=self.policy.parameters(), lr=self.learning_rate
         )
-        
+
         if checkpoint_path:
             checkpoint = torch.load(checkpoint_path)
             self.epsilon = checkpoint.get("epsilon", self.epsilon)
             self.policy.load_state_dict(checkpoint["model_state_dict"])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.start_episode = checkpoint.get("episode", 0) + 1 # Resume from next episode
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.start_episode = (
+                checkpoint.get("episode", 0) + 1
+            )  # Resume from next episode
             del checkpoint
 
         gc.collect()
@@ -135,7 +145,10 @@ class Agent:
                     "epsilon": self.epsilon,
                 }
 
-                torch.save(checkpoint, f"checkpoint_{self.learning_mode}_{self.name_output}.pth")
+                torch.save(
+                    checkpoint,
+                    f"checkpoint_{self.learning_mode}_{self.name_output}.pth",
+                )
                 self.save_line_plot(f"reward_{self.name_output}", avg_rewards, i)
                 self.save_line_plot(f"iterations_{self.name_output}", avg_iterations, i)
                 self.save_line_plot(f"max tiles_{self.name_output}", avg_max_tiles, i)
@@ -219,9 +232,9 @@ class Agent:
             while not self.board.is_game_over():
                 action: int = (
                     self.policy(
-                        torch.tensor(
-                            self.board.get_state(), dtype=torch.float32
-                        ).to(self.device)
+                        torch.tensor(self.board.get_state(), dtype=torch.float32).to(
+                            self.device
+                        )
                     )
                     .argmax()
                     .item()
@@ -248,13 +261,13 @@ class Agent:
     def save_line_plot(self, name, values, episode_num):
         plt.figure(figsize=(10, 5))
         plt.title(f"Training Progress - Episode {episode_num}")
-        
-        plt.plot(values, alpha=0.3, color='blue', label=f'Raw {name}')
-        
+
+        plt.plot(values, alpha=0.3, color="blue", label=f"Raw {name}")
+
         plt.xlabel("Episode")
         plt.ylabel(f"Total {name}")
         plt.legend()
-        
+
         # Save the file with the episode count in the name
         plt.savefig(f"{self.learning_mode}_images/{name}_plot_{episode_num}.png")
         plt.close()
@@ -264,10 +277,10 @@ class Agent:
 
         while not self.board.is_game_over():
             q_vals = self.policy(
-                    torch.tensor([self.board.get_state()], dtype=torch.float32).to(
-                        self.device
-                    )
-                ).squeeze()
+                torch.tensor([self.board.get_state()], dtype=torch.float32).to(
+                    self.device
+                )
+            ).squeeze()
 
             action = q_vals.argmax().item()
             _, possible = self.board.play(action)
